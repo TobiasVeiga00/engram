@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -128,5 +129,94 @@ func TestTemplGeneratedFilesAreCheckedIn(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+// canonicalTemplGenerateCommand is the single codegen invocation Engram
+// documents, advertises through TemplRuntimePolicy, and wires into
+// //go:generate directives. It resolves templ through the module's tool
+// directive so contributors never need templ on PATH.
+const canonicalTemplGenerateCommand = "go tool templ generate"
+
+// repoRootFile reads a file from the repository root, located relative to this
+// test's own source path (internal/cloud/dashboard -> three levels up).
+func repoRootFile(t *testing.T, name string) string {
+	t.Helper()
+
+	_, callerFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root := filepath.Join(filepath.Dir(callerFile), "..", "..", "..")
+
+	content, err := os.ReadFile(filepath.Join(root, name))
+	if err != nil {
+		t.Fatalf("read %s from repo root: %v", name, err)
+	}
+	return string(content)
+}
+
+// TestTemplGenerateCommandIsExecutable asserts that the codegen command Engram
+// advertises is actually runnable. `go tool templ generate` only resolves when
+// go.mod declares the matching tool directive; without it the command fails
+// with `go: no such tool "templ"`, which is what contributors hit when they
+// follow DOCS.md.
+func TestTemplGenerateCommandIsExecutable(t *testing.T) {
+	if got := templRuntimePolicy().GenerateCommand; got != canonicalTemplGenerateCommand {
+		t.Fatalf(
+			"TemplRuntimePolicy.GenerateCommand = %q, want %q.\nPossible cause: the advertised codegen command drifted from the one the docs and //go:generate directives use.",
+			got, canonicalTemplGenerateCommand,
+		)
+	}
+
+	const toolDirective = "tool github.com/a-h/templ/cmd/templ"
+	if !strings.Contains(repoRootFile(t, "go.mod"), toolDirective) {
+		t.Fatalf(
+			"go.mod does not declare %q.\nPossible cause: the tool directive was removed, which breaks %q with `go: no such tool \"templ\"`. Restore it with `go get -tool github.com/a-h/templ/cmd/templ`.",
+			toolDirective, canonicalTemplGenerateCommand,
+		)
+	}
+}
+
+// TestTemplGenerateDirectivesAreCanonical asserts that every //go:generate
+// directive that drives templ in this package uses the canonical command, so
+// `go generate ./...` never falls back to a bare `templ` binary on PATH.
+func TestTemplGenerateDirectivesAreCanonical(t *testing.T) {
+	_, callerFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	pkgDir := filepath.Dir(callerFile)
+
+	entries, err := os.ReadDir(pkgDir)
+	if err != nil {
+		t.Fatalf("os.ReadDir(%s) failed: %v", pkgDir, err)
+	}
+
+	directiveRe := regexp.MustCompile(`(?m)^//go:generate .*templ generate.*$`)
+
+	found := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(pkgDir, entry.Name()))
+		if err != nil {
+			t.Fatalf("os.ReadFile(%s) failed: %v", entry.Name(), err)
+		}
+		for _, directive := range directiveRe.FindAllString(string(content), -1) {
+			found++
+			want := "//go:generate " + canonicalTemplGenerateCommand
+			if strings.TrimSpace(directive) != want {
+				t.Errorf(
+					"%s declares %q, want %q.\nPossible cause: a bare `templ generate` directive requires templ on PATH and fails for contributors who only ran `go mod download`.",
+					entry.Name(), strings.TrimSpace(directive), want,
+				)
+			}
+		}
+	}
+
+	if found == 0 {
+		t.Fatal("no //go:generate templ directive found in the dashboard package; expected at least one")
 	}
 }

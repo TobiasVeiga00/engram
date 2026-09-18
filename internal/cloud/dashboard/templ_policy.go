@@ -1,6 +1,6 @@
 package dashboard
 
-//go:generate templ generate
+//go:generate go tool templ generate
 
 type TemplRuntimePolicy struct {
 	Mode                     string
@@ -12,6 +12,6 @@ func templRuntimePolicy() TemplRuntimePolicy {
 	return TemplRuntimePolicy{
 		Mode:                     "checked-in-generated",
 		RuntimeGenerationAllowed: false,
-		GenerateCommand:          "templ generate",
+		GenerateCommand:          "go tool templ generate",
 	}
 }
